@@ -1,6 +1,5 @@
 import os
 import json
-import time
 
 from dotenv import load_dotenv
 from groq import Groq
@@ -21,13 +20,14 @@ ENV_PATH = os.path.join(
 
 load_dotenv(ENV_PATH)
 
-api_key = os.getenv("GROQ_API_KEY")
+api_key = os.getenv(
+    "GROQ_API_KEY"
+)
 
 if not api_key:
     raise ValueError(
         "GROQ_API_KEY not found. "
-        "Please add GROQ_API_KEY to Render Environment Variables "
-        "or backend/.env for local development."
+        "Please check your backend/.env file."
     )
 
 
@@ -37,7 +37,7 @@ if not api_key:
 
 client = Groq(
     api_key=api_key,
-    timeout=60.0
+    timeout=45.0
 )
 
 MODEL_NAME = "openai/gpt-oss-20b"
@@ -59,116 +59,109 @@ def generate_response(
             "LLM prompt cannot be empty."
         )
 
-    last_error = None
+    try:
 
-    # --------------------------------------------------------
-    # Retry up to 3 times
-    # --------------------------------------------------------
+        request_data = {
+            "model": MODEL_NAME,
 
-    for attempt in range(3):
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
 
-        try:
+            "temperature": temperature,
 
-            request_data = {
-                "model": MODEL_NAME,
+            "max_tokens": max_tokens,
 
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
+            "stream": False
+        }
 
-                "temperature": temperature,
+        # ----------------------------------------------------
+        # JSON MODE
+        # ----------------------------------------------------
 
-                "max_tokens": max_tokens
+        if json_mode:
+
+            request_data["response_format"] = {
+                "type": "json_object"
             }
 
-            # ------------------------------------------------
-            # JSON MODE
-            # ------------------------------------------------
+        response = client.chat.completions.create(
+            **request_data
+        )
 
-            if json_mode:
+    except Exception as e:
 
-                request_data["response_format"] = {
-                    "type": "json_object"
-                }
+        print(
+            "Groq API error:",
+            repr(e)
+        )
 
-            response = client.chat.completions.create(
-                **request_data
-            )
-
-            # ------------------------------------------------
-            # Validate choices
-            # ------------------------------------------------
-
-            if not response:
-                raise RuntimeError(
-                    "Groq returned no response."
-                )
-
-            if not response.choices:
-                raise RuntimeError(
-                    "Groq returned no response choices."
-                )
-
-            message = response.choices[0].message
-
-            if not message:
-                raise RuntimeError(
-                    "Groq returned an empty message."
-                )
-
-            content = message.content
-
-            # ------------------------------------------------
-            # Empty response
-            # ------------------------------------------------
-
-            if content is None:
-                raise RuntimeError(
-                    "Groq returned an empty response."
-                )
-
-            content = str(content).strip()
-
-            if not content:
-
-                raise RuntimeError(
-                    "Groq returned an empty response."
-                )
-
-            print(
-                f"Groq response received successfully "
-                f"on attempt {attempt + 1}."
-            )
-
-            return content
-
-        except Exception as e:
-
-            last_error = e
-
-            print(
-                f"Groq attempt {attempt + 1} failed:",
-                repr(e)
-            )
-
-            # -----------------------------------------------
-            # Wait before retry
-            # -----------------------------------------------
-
-            if attempt < 2:
-                time.sleep(1.5)
+        raise RuntimeError(
+            f"Groq API request failed: {str(e)}"
+        )
 
     # --------------------------------------------------------
-    # All retries failed
+    # RESPONSE VALIDATION
     # --------------------------------------------------------
 
-    raise RuntimeError(
-        f"Groq returned no usable response after 3 attempts: "
-        f"{last_error}"
+    if not response:
+
+        raise RuntimeError(
+            "Groq returned no response."
+        )
+
+    if not response.choices:
+
+        raise RuntimeError(
+            "Groq returned no response choices."
+        )
+
+    message = response.choices[0].message
+
+    content = getattr(
+        message,
+        "content",
+        None
     )
+
+    # --------------------------------------------------------
+    # HANDLE EMPTY CONTENT
+    # --------------------------------------------------------
+
+    if content is None or not str(content).strip():
+
+        print(
+            "Groq returned empty content."
+        )
+
+        print(
+            "Full Groq response:",
+            repr(response)
+        )
+
+        # Some models may return reasoning separately.
+        reasoning = getattr(
+            message,
+            "reasoning",
+            None
+        )
+
+        if reasoning and str(reasoning).strip():
+
+            content = reasoning
+
+        else:
+
+            raise RuntimeError(
+                "Groq returned an empty response."
+            )
+
+    return str(
+        content
+    ).strip()
 
 
 # ============================================================
@@ -266,17 +259,20 @@ def parse_json_response(
             pass
 
     # --------------------------------------------------------
-    # Parsing failed
+    # Nothing worked
     # --------------------------------------------------------
 
     print(
         "JSON parsing failed. Raw response:"
     )
 
-    print(response)
+    print(
+        response
+    )
 
     return {
-        "raw_response": response
+        "raw_response":
+            response
     }
 
 
@@ -512,6 +508,7 @@ Use exactly:
         result,
         dict
     ):
+
         result = {}
 
     # --------------------------------------------------------
@@ -521,9 +518,11 @@ Use exactly:
     def safe_score(value):
 
         try:
+
             value = float(value)
 
         except Exception:
+
             return 0
 
         return round(
@@ -565,6 +564,10 @@ Use exactly:
         )
     )
 
+    # --------------------------------------------------------
+    # CALCULATE OVERALL SCORE
+    # --------------------------------------------------------
+
     overall_score = round(
         (
             technical_accuracy
@@ -580,7 +583,7 @@ Use exactly:
         []
     )
 
-    weaknesses = result.get(
+    areas_to_improve = result.get(
         "areas_to_improve",
         []
     )
@@ -592,10 +595,10 @@ Use exactly:
         strengths = []
 
     if not isinstance(
-        weaknesses,
+        areas_to_improve,
         list
     ):
-        weaknesses = []
+        areas_to_improve = []
 
     return {
 
@@ -618,7 +621,7 @@ Use exactly:
             strengths,
 
         "weaknesses":
-            weaknesses,
+            areas_to_improve,
 
         "feedback":
             result.get(
@@ -666,36 +669,14 @@ Requirements:
 Return ONLY the question text.
 """
 
-    try:
-
-        response = generate_response(
-            prompt,
-            temperature=0.4,
-            json_mode=False,
-            max_tokens=300
-        )
-
-        response = response.strip()
-
-        if response:
-            return response
-
-    except Exception as e:
-
-        print(
-            "Follow-up question generation failed:",
-            repr(e)
-        )
-
-    # --------------------------------------------------------
-    # Guaranteed fallback
-    # --------------------------------------------------------
-
-    return (
-        "Can you explain the technical reasoning behind "
-        "your approach and discuss one limitation or "
-        "trade-off you would consider?"
+    response = generate_response(
+        prompt,
+        temperature=0.4,
+        json_mode=False,
+        max_tokens=400
     )
+
+    return response.strip()
 
 
 # ============================================================
@@ -767,96 +748,111 @@ Rules:
 7. Do not ask for an introduction.
 8. Return ONLY the question text.
 9. Do NOT return JSON.
-10. Do not include "Question:" or any heading.
-"""
 
-    # --------------------------------------------------------
-    # Primary generation
-    # --------------------------------------------------------
+Your response MUST contain a question.
+"""
 
     try:
 
-        next_question = generate_response(
+        response = generate_response(
             prompt,
-            temperature=0.4,
+            temperature=0.3,
             json_mode=False,
             max_tokens=300
         )
 
-        next_question = next_question.strip()
-
-        # -----------------------------------------------
-        # Remove quotes
-        # -----------------------------------------------
-
-        if (
-            next_question.startswith('"')
-            and next_question.endswith('"')
-        ):
-
-            next_question = next_question[
-                1:-1
-            ].strip()
-
-        # -----------------------------------------------
-        # Remove common prefixes
-        # -----------------------------------------------
-
-        prefixes = [
-            "Question:",
-            "question:",
-            "Next Question:",
-            "Next question:",
-            "NEXT QUESTION:"
-        ]
-
-        for prefix in prefixes:
-
-            if next_question.startswith(
-                prefix
-            ):
-
-                next_question = next_question[
-                    len(prefix):
-                ].strip()
-
-        if next_question:
-
-            print(
-                "Next interview question generated successfully."
-            )
-
-            return next_question
-
     except Exception as e:
 
         print(
-            "Next question generation failed:",
+            "Primary next-question generation failed:",
             repr(e)
         )
 
+        # ----------------------------------------------------
+        # FALLBACK
+        # ----------------------------------------------------
+
+        fallback_prompt = f"""
+You are an AI/ML interviewer.
+
+Ask ONE concise technical follow-up question.
+
+Previous question:
+{previous_question}
+
+Candidate answer:
+{candidate_answer}
+
+Return ONLY the question.
+Do not return JSON.
+"""
+
+        try:
+
+            response = generate_response(
+                fallback_prompt,
+                temperature=0.2,
+                json_mode=False,
+                max_tokens=200
+            )
+
+        except Exception as fallback_error:
+
+            print(
+                "Fallback next-question generation failed:",
+                repr(fallback_error)
+            )
+
+            raise RuntimeError(
+                "Could not generate the next interview question."
+            )
+
+    next_question = str(
+        response
+    ).strip()
+
     # --------------------------------------------------------
-    # FALLBACK QUESTION
+    # CLEAN RESPONSE
     # --------------------------------------------------------
 
-    fallback_question = generate_follow_up_question(
-        previous_question,
-        candidate_answer,
-        resume_text
-    )
+    if (
+        next_question.startswith('"')
+        and next_question.endswith('"')
+    ):
 
-    if fallback_question:
+        next_question = next_question[
+            1:-1
+        ].strip()
 
-        return fallback_question
+    prefixes = [
+        "Question:",
+        "Next Question:",
+        "Next question:",
+        "QUESTION:",
+        "NEXT QUESTION:"
+    ]
+
+    for prefix in prefixes:
+
+        if next_question.startswith(
+            prefix
+        ):
+
+            next_question = next_question[
+                len(prefix):
+            ].strip()
 
     # --------------------------------------------------------
-    # Absolute fallback
+    # FINAL VALIDATION
     # --------------------------------------------------------
 
-    return (
-        "What are the main limitations of the approach "
-        "you described, and how would you improve it?"
-    )
+    if not next_question:
+
+        raise RuntimeError(
+            "AI returned an empty next question."
+        )
+
+    return next_question
 
 
 # ============================================================
